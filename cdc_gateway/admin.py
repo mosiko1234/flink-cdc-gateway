@@ -1,4 +1,3 @@
-# cdc_gateway/admin.py
 """
 Flask application for CDC Gateway Admin API
 """
@@ -20,10 +19,70 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load configuration
-config_path = os.environ.get('CONFIG_PATH', '/opt/flink-cdc/config/cdc-gateway-config.yaml')
-with open(config_path, 'r') as f:
-    config = yaml.safe_load(f)
+# Define configuration loading with fallbacks
+def load_config():
+    # חפש את קובץ התצורה במספר מיקומים אפשריים
+    config_paths = [
+        os.environ.get('CONFIG_PATH'),  # אם הוגדר משתנה סביבה
+        '/opt/flink-cdc/config/cdc-gateway-config.yaml',  # מיקום ברירת מחדל בהפעלה
+        os.path.join(os.path.dirname(__file__), '..', 'config', 'cdc-gateway-config.yaml'),  # בתוך הפרויקט
+        os.path.join(os.path.dirname(__file__), '..', 'tests', 'test-config.yaml'),  # קובץ בדיקות
+    ]
+    
+    # נסה לקרוא מכל מיקום אפשרי
+    for path in config_paths:
+        if path and os.path.exists(path):
+            logger.info(f"Loading configuration from: {path}")
+            try:
+                with open(path, 'r') as f:
+                    return yaml.safe_load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load config from {path}: {str(e)}")
+    
+    # לא נמצא קובץ תצורה - השתמש בערכי ברירת מחדל בסיסיים
+    logger.warning("No configuration file found, using default values")
+    return {
+        "api": {"port": 8084},
+        "admin": {"port": 8085},
+        "pipelines": {"workspace": "/tmp/pipelines"},
+        "flink": {
+            "jobmanager": "localhost",
+            "port": 6123,
+            "restPort": 8081
+        },
+        "external": {
+            "sqlserver": {},
+            "kafka": {},
+            "s3": {}
+        },
+        "logging": {"level": "INFO"}
+    }
+
+# טען את קובץ התצורה
+config = load_config()
+
+# Mock PipelineManager for testing or initialize it in production
+try:
+    from cdc_gateway.pipeline_manager import PipelineManager
+    from cdc_gateway.flink_client import FlinkClient
+    
+    # Initialize real components if imports succeeded
+    flink_client = FlinkClient(
+        jobmanager_host=os.environ.get('FLINK_JOBMANAGER_HOST', config.get('flink', {}).get('jobmanager', 'localhost')),
+        jobmanager_port=int(os.environ.get('FLINK_JOBMANAGER_PORT', config.get('flink', {}).get('port', 6123))),
+        config=config.get('flink', {})
+    )
+    
+    pipeline_manager = PipelineManager(
+        flink_client=flink_client,
+        workspace=config.get('pipelines', {}).get('workspace', '/tmp/pipelines'),
+        config=config
+    )
+except ImportError:
+    # For testing, we might not have these components available
+    # and they will be mocked in tests
+    logger.warning("Failed to import PipelineManager or FlinkClient, using mocks")
+    pipeline_manager = None
 
 # Prometheus metrics
 api_requests = Counter('cdc_gateway_api_requests_total', 'Total API requests', ['endpoint', 'method', 'status'])
@@ -57,13 +116,24 @@ def metrics():
 # Info endpoint
 @app.route('/info', methods=['GET'])
 def info():
-    # Get pipeline counts from workspace directory
-    workspace = config['pipelines']['workspace']
+    # Get pipeline counts from workspace or pipeline manager if available
+    workspace = config.get('pipelines', {}).get('workspace', '/tmp/pipelines')
     pipeline_count = 0
-    if os.path.exists(workspace):
-        pipeline_count = len([f for f in os.listdir(workspace) if f.endswith('.json')])
     
-    active_pipelines.set(pipeline_count)
+    if pipeline_manager:
+        try:
+            pipelines = pipeline_manager.get_all_pipelines()
+            pipeline_count = len(pipelines)
+            running_count = sum(1 for p in pipelines if p.get('status') == 'RUNNING')
+            active_pipelines.set(running_count)
+        except Exception as e:
+            logger.error(f"Error getting pipeline count: {str(e)}")
+    elif os.path.exists(workspace):
+        try:
+            pipeline_count = len([f for f in os.listdir(workspace) if f.endswith('.json')])
+            active_pipelines.set(0)  # Not able to determine running count
+        except Exception as e:
+            logger.error(f"Error reading workspace: {str(e)}")
     
     return jsonify({
         "version": "0.7.0",
@@ -74,8 +144,8 @@ def info():
             "workspace": workspace
         },
         "flink": {
-            "jobmanager": os.environ.get('FLINK_JOBMANAGER_HOST', config['flink']['jobmanager']),
-            "port": os.environ.get('FLINK_JOBMANAGER_PORT', config['flink']['port'])
+            "jobmanager": os.environ.get('FLINK_JOBMANAGER_HOST', config.get('flink', {}).get('jobmanager', 'localhost')),
+            "port": os.environ.get('FLINK_JOBMANAGER_PORT', config.get('flink', {}).get('port', 6123))
         },
         "system": {
             "memory_used_mb": round(psutil.virtual_memory().used / (1024 * 1024), 2),
@@ -84,6 +154,10 @@ def info():
         }
     })
 
-if __name__ == '__main__':
-    port = int(os.environ.get('CDC_GATEWAY_ADMIN_PORT', config['admin']['port']))
+def main():
+    """Main entry point for the admin application"""
+    port = int(os.environ.get('CDC_GATEWAY_ADMIN_PORT', config.get('admin', {}).get('port', 8085)))
     app.run(host='0.0.0.0', port=port, debug=False)
+
+if __name__ == "__main__":
+    main()

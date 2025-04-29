@@ -1,4 +1,3 @@
-# cdc_gateway/app.py
 """
 Main Flask application for CDC Gateway API
 """
@@ -21,21 +20,58 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load configuration
-config_path = os.environ.get('CONFIG_PATH', '/opt/flink-cdc/config/cdc-gateway-config.yaml')
-with open(config_path, 'r') as f:
-    config = yaml.safe_load(f)
+# Define configuration loading with fallbacks
+def load_config():
+    # חפש את קובץ התצורה במספר מיקומים אפשריים
+    config_paths = [
+        os.environ.get('CONFIG_PATH'),  # אם הוגדר משתנה סביבה
+        '/opt/flink-cdc/config/cdc-gateway-config.yaml',  # מיקום ברירת מחדל בהפעלה
+        os.path.join(os.path.dirname(__file__), '..', 'config', 'cdc-gateway-config.yaml'),  # בתוך הפרויקט
+        os.path.join(os.path.dirname(__file__), '..', 'tests', 'test-config.yaml'),  # קובץ בדיקות
+    ]
+    
+    # נסה לקרוא מכל מיקום אפשרי
+    for path in config_paths:
+        if path and os.path.exists(path):
+            logger.info(f"Loading configuration from: {path}")
+            try:
+                with open(path, 'r') as f:
+                    return yaml.safe_load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load config from {path}: {str(e)}")
+    
+    # לא נמצא קובץ תצורה - השתמש בערכי ברירת מחדל בסיסיים
+    logger.warning("No configuration file found, using default values")
+    return {
+        "api": {"port": 8084},
+        "admin": {"port": 8085},
+        "pipelines": {"workspace": "/tmp/pipelines"},
+        "flink": {
+            "jobmanager": "localhost",
+            "port": 6123,
+            "restPort": 8081
+        },
+        "external": {
+            "sqlserver": {},
+            "kafka": {},
+            "s3": {}
+        },
+        "logging": {"level": "INFO"}
+    }
+
+# טען את קובץ התצורה
+config = load_config()
 
 # Initialize components
 flink_client = FlinkClient(
-    jobmanager_host=os.environ.get('FLINK_JOBMANAGER_HOST', config['flink']['jobmanager']),
-    jobmanager_port=int(os.environ.get('FLINK_JOBMANAGER_PORT', config['flink']['port'])),
-    config=config['flink']
+    jobmanager_host=os.environ.get('FLINK_JOBMANAGER_HOST', config.get('flink', {}).get('jobmanager', 'localhost')),
+    jobmanager_port=int(os.environ.get('FLINK_JOBMANAGER_PORT', config.get('flink', {}).get('port', 6123))),
+    config=config.get('flink', {})
 )
 
 pipeline_manager = PipelineManager(
     flink_client=flink_client,
-    workspace=config['pipelines']['workspace'],
+    workspace=config.get('pipelines', {}).get('workspace', '/tmp/pipelines'),
     config=config
 )
 
@@ -149,6 +185,10 @@ def delete_pipeline(pipeline_id):
         logger.error(f"Failed to delete pipeline {pipeline_id}: {str(e)}")
         return jsonify(error=str(e)), 500
 
-if __name__ == '__main__':
-    port = int(os.environ.get('CDC_GATEWAY_PORT', config['api']['port']))
+def main():
+    """Main entry point for the application"""
+    port = int(os.environ.get('CDC_GATEWAY_PORT', config.get('api', {}).get('port', 8084)))
     app.run(host='0.0.0.0', port=port, debug=False)
+
+if __name__ == '__main__':
+    main()
