@@ -1,4 +1,3 @@
-# cdc_gateway/flink_client.py
 """
 Client for interacting with Apache Flink REST API
 """
@@ -17,7 +16,8 @@ class FlinkClient:
         self.jobmanager_port = jobmanager_port
         self.config = config
         self.rest_port = config.get('restPort', 8081)
-        self.rest_base_url = f"http://{jobmanager_host}:{self.rest_port}/v1"
+        # תיקון הנתיב הבסיסי ל-REST API - שינוי /v1 ל-/
+        self.rest_base_url = f"http://{jobmanager_host}:{self.rest_port}"
         self.timeout = 30  # Default request timeout in seconds
         
         logger.info(f"Initialized Flink client with JobManager at {jobmanager_host}:{jobmanager_port}, "
@@ -73,20 +73,20 @@ class FlinkClient:
         """
         logger.info(f"Deploying SQL job: {job_name}")
         
-        # Create SQL session
-        session_data = {"sessionName": job_name}
-        session_response = self._make_request('POST', '/sessions', json=session_data)
-        session_handle = session_response.get('session_handle')
-        logger.info(f"Created SQL session with handle: {session_handle}")
-        
         try:
+            # Create SQL session
+            session_data = {"sessionName": job_name}
+            session_response = self._make_request('POST', '/v1/sessions', json=session_data)
+            session_handle = session_response.get('session_handle')
+            logger.info(f"Created SQL session with handle: {session_handle}")
+        
             # Execute SQL statements
             for i, sql in enumerate(sql_statements):
                 logger.debug(f"Executing SQL statement {i+1}/{len(sql_statements)}")
                 execute_data = {"statement": sql}
                 operation_response = self._make_request(
                     'POST', 
-                    f'/sessions/{session_handle}/statements',
+                    f'/v1/sessions/{session_handle}/statements',
                     json=execute_data
                 )
                 operation_handle = operation_response.get('operation_handle')
@@ -98,7 +98,7 @@ class FlinkClient:
             final_operation_handle = operation_handle
             status_response = self._make_request(
                 'GET',
-                f'/sessions/{session_handle}/operations/{final_operation_handle}/status'
+                f'/v1/sessions/{session_handle}/operations/{final_operation_handle}/status'
             )
             
             # Extract job ID from result
@@ -125,7 +125,8 @@ class FlinkClient:
             logger.error(f"Failed to deploy SQL job {job_name}: {str(e)}")
             # Clean up session
             try:
-                self._make_request('DELETE', f'/sessions/{session_handle}')
+                if session_handle:
+                    self._make_request('DELETE', f'/v1/sessions/{session_handle}')
             except:
                 pass
             raise
@@ -134,19 +135,25 @@ class FlinkClient:
         """Wait for an operation to complete"""
         retries = 0
         while retries < max_retries:
-            status_response = self._make_request(
-                'GET',
-                f'/sessions/{session_handle}/operations/{operation_handle}/status'
-            )
-            status = status_response.get('status')
-            
-            if status in ['FINISHED', 'ERROR', 'CANCELED']:
-                if status == 'ERROR':
-                    error = status_response.get('error', 'Unknown error')
-                    raise ValueError(f"SQL operation failed: {error}")
-                return status_response
-            
-            time.sleep(retry_interval)
-            retries += 1
+            try:
+                status_response = self._make_request(
+                    'GET',
+                    f'/v1/sessions/{session_handle}/operations/{operation_handle}/status'
+                )
+                
+                status = status_response.get('status')
+                
+                if status in ['FINISHED', 'ERROR', 'CANCELED']:
+                    if status == 'ERROR':
+                        error = status_response.get('error', 'Unknown error')
+                        raise ValueError(f"SQL operation failed: {error}")
+                    return status_response
+                
+                time.sleep(retry_interval)
+                retries += 1
+            except Exception as e:
+                logger.warning(f"Error checking operation status: {str(e)}")
+                time.sleep(retry_interval)
+                retries += 1
         
         raise TimeoutError(f"Operation timed out after {max_retries * retry_interval} seconds")

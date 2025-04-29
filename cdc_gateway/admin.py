@@ -114,6 +114,8 @@ def metrics():
     return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 
 # Info endpoint
+# תיקון לפונקציית info ב-admin.py
+
 @app.route('/info', methods=['GET'])
 def info():
     # Get pipeline counts from workspace or pipeline manager if available
@@ -130,7 +132,10 @@ def info():
             logger.error(f"Error getting pipeline count: {str(e)}")
     elif os.path.exists(workspace):
         try:
-            pipeline_count = len([f for f in os.listdir(workspace) if f.endswith('.json')])
+            # ספירה של קבצי JSON בתיקיית העבודה
+            pipeline_files = [f for f in os.listdir(workspace) if f.endswith('.json')]
+            pipeline_count = len(pipeline_files)
+            logger.debug(f"Found {pipeline_count} pipeline files in {workspace}: {pipeline_files}")
             active_pipelines.set(0)  # Not able to determine running count
         except Exception as e:
             logger.error(f"Error reading workspace: {str(e)}")
