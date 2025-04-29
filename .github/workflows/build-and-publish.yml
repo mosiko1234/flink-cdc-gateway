@@ -65,7 +65,7 @@ jobs:
         
     - name: Build package
       run: |
-        # Update version in setup.py or __init__.py based on tag
+        # Update version in init file based on tag
         sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_version.outputs.VERSION }}\"/" cdc_gateway/__init__.py
         python -m build
         
@@ -93,7 +93,7 @@ jobs:
       id: meta
       uses: docker/metadata-action@v4
       with:
-        images: ${{ secrets.DOCKER_REGISTRY }}/flink-cdc-gateway
+        images: ${{ secrets.DOCKER_USERNAME }}/flink-cdc-gateway  # שימוש ישיר ב-Docker Hub
         tags: |
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
@@ -103,11 +103,10 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
       
-    - name: Login to Docker Registry
+    - name: Login to Docker Hub
       if: github.event_name != 'pull_request'
       uses: docker/login-action@v2
       with:
-        registry: ${{ secrets.DOCKER_REGISTRY }}
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
         
@@ -155,7 +154,7 @@ jobs:
           
           ### Docker
           ```
-          docker pull ${{ secrets.DOCKER_REGISTRY }}/flink-cdc-gateway:${{ github.ref_name }}
+          docker pull ${{ secrets.DOCKER_USERNAME }}/flink-cdc-gateway:${{ github.ref_name }}
           ```
         artifacts: "dist/*"
         token: ${{ secrets.GITHUB_TOKEN }}
