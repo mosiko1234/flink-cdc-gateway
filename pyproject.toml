@@ -10,12 +10,12 @@ readme = "README.md"
 authors = [
     {name = "Moshe Eliya", email = "mosiko1234@gmail.com"}
 ]
+license = {text = "Apache-2.0"}  # SPDX identifier instead of classifier
 requires-python = ">=3.8"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
@@ -24,33 +24,11 @@ classifiers = [
     "Topic :: Database",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = [
-    "flask==2.0.1",
-    "flask-restful==0.3.9",
-    "werkzeug==2.0.2",
-    "requests==2.28.2",
-    "pyyaml>=6.0",
-    "jsonschema>=4.0.0",
-    "kafka-python>=2.0.2",
-    "prometheus-client>=0.11.0",
-    "python-dotenv>=0.19.0",
-    "gunicorn>=20.1.0",
-    "psutil>=5.9.0",
-]
+# Dependencies - removed and relying on setup.py for now until we fix the conflicts
 
 [project.urls]
-Homepage = "https://github.com/yourusername/flink-cdc-gateway"
-"Bug Tracker" = "https://github.com/yourusername/flink-cdc-gateway/issues"
-
-[project.optional-dependencies]
-dev = [
-    "pytest==7.3.1",
-    "pytest-cov==4.1.0",
-    "flake8==6.0.0",
-    "black>=22.3.0",
-    "isort>=5.10.0",
-    "mypy>=0.950",
-]
+Homepage = "https://github.com/mosiko1234/flink-cdc-gateway"
+"Bug Tracker" = "https://github.com/mosiko1234/flink-cdc-gateway/issues"
 
 [project.scripts]
 cdc-gateway = "cdc_gateway.app:main"

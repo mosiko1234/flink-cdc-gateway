@@ -14,19 +14,30 @@ with open(os.path.join("cdc_gateway", "__init__.py"), "r") as f:
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
-# Read requirements from requirements.txt
-with open("requirements.txt", "r", encoding="utf-8") as fh:
-    requirements = [line.strip() for line in fh.readlines() if line.strip() and not line.startswith("#")]
+# Define requirements directly - don't rely on requirements.txt
+requirements = [
+    "flask==2.0.1",
+    "flask-restful==0.3.9",
+    "werkzeug==2.0.2",
+    "requests==2.28.2",
+    "pyyaml>=6.0",
+    "jsonschema>=4.0.0",
+    "kafka-python>=2.0.2",
+    "prometheus-client>=0.11.0",
+    "python-dotenv>=0.19.0",
+    "gunicorn>=20.1.0",
+    "psutil>=5.9.0",
+]
 
 setup(
     name="flink-cdc-gateway",
     version=version,
-    author="Your Company",
-    author_email="admin@example.com",
+    author="Moshe Eliya",
+    author_email="mosiko1234@gmail.com",
     description="Change Data Capture Gateway for Apache Flink",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/flink-cdc-gateway",
+    url="https://github.com/mosiko1234/flink-cdc-gateway",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
