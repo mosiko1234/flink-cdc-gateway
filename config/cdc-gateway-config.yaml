@@ -1,0 +1,82 @@
+# config/cdc-gateway-config.yaml
+# CDC Gateway Configuration
+
+# API Configuration
+api:
+  port: 8084
+  threads: 4
+  workers: 2
+  maxConnections: 100
+  maxRequestBodySize: 10485760  # 10MB
+  responseCacheSeconds: 5
+
+# Admin Interface Configuration
+admin:
+  port: 8085
+  threads: 2
+  workers: 1
+  enableMetrics: true
+  enableJMX: false
+
+# Pipeline Management
+pipelines:
+  workspace: /opt/flink-cdc/pipelines
+  maxConcurrentJobs: 10
+  defaultParallelism: 2
+  checkpointIntervalSec: 60
+  monitorIntervalSec: 10
+  createTopicsIfMissing: true
+
+# Flink Configuration
+flink:
+  jobmanager: flink-jobmanager
+  port: 6123
+  restPort: 8081
+  jarPath: /opt/flink/plugins/cdc/lib
+  checkpointDir: "s3://flink-checkpoints/"
+  savepointDir: "s3://flink-savepoints/"
+  defaultStateBackend: "rocksdb"
+  defaultParallelism: 2
+  defaultSavepointOnCancel: true
+
+# External Systems Configuration
+external:
+  # SQL Server default configuration
+  sqlserver:
+    defaultConnectTimeout: 30
+    defaultSocketTimeout: 60
+    trustServerCertificate: true
+    applicationName: "flink-cdc"
+    defaultIsolationLevel: "read_committed"
+  
+  # Kafka default configuration
+  kafka:
+    defaultReplicationFactor: 3
+    defaultPartitions: 3
+    acks: "all"
+    retries: 3
+    batchSize: 16384
+    lingerMs: 1
+    bufferMemory: 33554432
+  
+  # S3/MinIO configuration
+  s3:
+    pathStyleAccess: true
+    connectionTimeout: 5000
+    maxErrorRetry: 3
+
+# Security Configuration
+security:
+  enableAuthentication: false  # Set to true to enable authentication
+  enableAuthorization: false   # Set to true to enable authorization
+  tlsEnabled: false            # Set to true to enable TLS
+  # Secrets are loaded from environment variables
+
+# Logging Configuration
+logging:
+  level: INFO
+  consoleEnabled: true
+  fileEnabled: false
+  filePath: "/opt/flink/log/cdc-gateway.log"
+  maxFileSize: 10485760  # 10MB
+  maxBackupCount: 5
