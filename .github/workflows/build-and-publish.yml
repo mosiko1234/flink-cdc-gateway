@@ -1,182 +1,518 @@
-# .github/workflows/build-and-publish.yml
-name: Build and Publish Flink CDC Gateway
+# .github/workflows/advanced-cicd-pipeline.yml
+name: Flink CDC Gateway CI/CD Pipeline
 
+# הפעלת תהליך על פושים, תגים ופול ריקווסט
 on:
   push:
-    branches: [ main, master ]
-    tags:
-      - 'v*.*.*'
+    branches: [main, master, develop, 'release/**', 'feature/**']
+    tags: ['v*.*.*']
+    paths-ignore:
+      - '**.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'docs/**'
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master, develop]
+    paths-ignore:
+      - '**.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'docs/**'
+  # הפעלה ידנית
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      debug_enabled:
+        description: 'Run the build with debug logging'
+        type: boolean
+        required: false
+        default: false
+
+# הגדרת סביבות
+env:
+  PYTHON_VERSION: '3.9'
+  REGISTRY: ${{ secrets.DOCKER_USERNAME }}
+  IMAGE_NAME: flink-cdc-gateway
+  CACHE_KEY_PREFIX: flink-cdc-gateway
+
+# הרשאות GITHUB_TOKEN
+permissions:
+  contents: write
+  packages: write
+  issues: write
+  pull-requests: write
+
+# מניעת ריצות מקבילות של אותו workflow על אותו ענף
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test Python Package
+  # בדיקות קוד סטטיות
+  code-quality:
+    name: Code Quality Checks
     runs-on: ubuntu-latest
-    
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-        
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install pytest==7.3.1 pytest-cov==4.1.0 flake8==6.0.0
-          
-        # התקן את הדרישות מקובץ הדרישות
-        if [ -f requirements.txt ]; then 
-          python -m pip install -r requirements.txt
-        fi
-          
-        # וודא שפלאסק וורקצויג מותקנים בגרסאות המתאימות
-        python -m pip install flask==2.0.1 werkzeug==2.0.2 --force-reinstall
-          
-        # התקן את החבילה עצמה במצב פיתוח
-        python -m pip install -e .
-    
-    - name: Setup test directories
-      run: |
-        # יצירת תיקיות נדרשות לבדיקות
-        mkdir -p /tmp/pipelines
-        mkdir -p /tmp/checkpoints
-        mkdir -p /tmp/savepoints
-        
-        # הגדרת הרשאות
-        chmod -R 777 /tmp/pipelines
-        chmod -R 777 /tmp/checkpoints
-        chmod -R 777 /tmp/savepoints
-        
-        # וודא שקובץ הבדיקות קיים
-        if [ ! -f tests/test-config.yaml ]; then
-          echo "Warning: test-config.yaml file missing! Creating empty file."
-          mkdir -p tests
-          touch tests/test-config.yaml
-        fi
-          
-    - name: Verify packages
-      run: |
-        # בדוק את הגרסאות המותקנות (להוסיף יותר מידע)
-        echo "Checking installed packages:"
-        python -m pip list | grep -E 'Flask|Werkzeug' || echo "Failed to find packages"
-          
-        # בדוק גם באמצעות pip show שלא מסתמך על grep
-        echo "Detailed package info:"
-        python -m pip show flask werkzeug || echo "Failed to show package details"
-        
-    - name: Lint with flake8
-      run: |
-        # stop the build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-        
-    - name: Test with pytest
-      run: |
-        # הרץ את הבדיקות עם הגדרת משתנה סביבה לנתיב קובץ תצורה
-        export CONFIG_PATH=$PWD/tests/test-config.yaml
-        pytest --cov=cdc_gateway
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # לקבלת היסטוריה מלאה לניתוח
 
-  publish-package:
-    name: Build and Publish Python Package
-    needs: test
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    
-    steps:
-    - uses: actions/checkout@v3
-      with:
-        token: ${{ secrets.PAT_GITHUB }}  # Using PAT for checkout
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-        
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install build twine
-    
-    - name: Extract version from tag
-      id: get_version
-      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-        
-    - name: Build package
-      run: |
-        # Update version in init file based on tag
-        sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_version.outputs.VERSION }}\"/" cdc_gateway/__init__.py
-        python -m build
-        
-    - name: Check package
-      run: |
-        python -m twine check dist/*
-        
-    - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        password: ${{ secrets.PYPI_API_TOKEN }}
-        repository-url: https://upload.pypi.org/legacy/
-    
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: dist/*
-        name: Release v${{ steps.get_version.outputs.VERSION }}
-        body: |
-          ## Flink CDC Gateway v${{ steps.get_version.outputs.VERSION }}
-          
-          ### Installation
-          
-          #### PyPI
-          ```
-          pip install flink-cdc-gateway
-          ```
-          
-          #### Docker
-          ```
-          docker pull ${{ secrets.DOCKER_USERNAME }}/flink-cdc-gateway:${{ steps.get_version.outputs.VERSION }}
-          ```
-        token: ${{ secrets.PAT_GITHUB }}  # Important: Using PAT here
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
-  publish-docker:
-    name: Build and Publish Docker Image
-    needs: test
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black isort mypy bandit safety
+          if [ -f requirements.txt ]; then 
+            pip install -r requirements.txt
+          fi
+          pip install -e ".[dev]"
+
+      - name: Check formatting with Black
+        run: black --check --diff .
+
+      - name: Check imports with isort
+        run: isort --check --diff .
+
+      - name: Lint with flake8
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Type check with mypy
+        run: mypy --ignore-missing-imports cdc_gateway/
+
+      - name: Security check with bandit
+        run: bandit -r cdc_gateway/ -x tests/
+
+      - name: Dependency vulnerability check
+        run: safety check
+
+  # בדיקות יחידה
+  unit-tests:
+    name: Unit Tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: [code-quality]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.8', '3.9', '3.10']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov pytest-xdist
+          if [ -f requirements.txt ]; then 
+            pip install -r requirements.txt
+          fi
+          pip install -e .
+
+      - name: Setup test environment
+        run: |
+          mkdir -p /tmp/pipelines
+          mkdir -p /tmp/checkpoints
+          mkdir -p /tmp/savepoints
+          chmod -R 777 /tmp/pipelines
+          chmod -R 777 /tmp/checkpoints
+          chmod -R 777 /tmp/savepoints
+          
+          if [ ! -f tests/test-config.yaml ]; then
+            echo "Creating test config file"
+            mkdir -p tests
+            touch tests/test-config.yaml
+          fi
+
+      - name: Run tests with pytest
+        run: |
+          export CONFIG_PATH=$PWD/tests/test-config.yaml
+          python -m pytest tests/ --cov=cdc_gateway -v --junitxml=test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v2
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: test-results.xml
+          retention-days: 30
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          fail_ci_if_error: false
+
+  # בניית חבילת Python
+  build-python-package:
+    name: Build Python Package
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    outputs:
+      version: ${{ steps.set_version.outputs.VERSION }}
+      is_release: ${{ steps.set_version.outputs.IS_RELEASE }}
     
     steps:
-    - uses: actions/checkout@v3
-      with:
-        token: ${{ secrets.PAT_GITHUB }}  # Using PAT for checkout
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.PAT_GITHUB }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Set version
+        id: set_version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+            echo "IS_RELEASE=true" >> $GITHUB_OUTPUT
+          else
+            DATE=$(date +'%Y%m%d%H%M')
+            SHA=${GITHUB_SHA::8}
+            BRANCH=${GITHUB_REF#refs/heads/}
+            BRANCH_SLUG=$(echo $BRANCH | sed -r 's/[\/\.]/-/g')
+            
+            if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
+              VERSION=$(python -c "import cdc_gateway; print(cdc_gateway.__version__)")-dev.$DATE.$SHA
+            else
+              VERSION=$(python -c "import cdc_gateway; print(cdc_gateway.__version__)")-$BRANCH_SLUG.$DATE.$SHA
+            fi
+            
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+            echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
+          fi
+          echo "Setting version to: $VERSION"
+
+      - name: Update version in code
+        run: |
+          sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.set_version.outputs.VERSION }}\"/" cdc_gateway/__init__.py
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: Check package
+        run: python -m twine check dist/*
+
+      - name: Upload built package
+        uses: actions/upload-artifact@v2
+        with:
+          name: python-package
+          path: dist/
+          retention-days: 30
+
+  # בניית ובדיקת Docker image
+  build-docker-image:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
     
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Set up Docker layer caching
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ env.CACHE_KEY_PREFIX }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ env.CACHE_KEY_PREFIX }}-buildx-
+
+      - name: Build Docker image for testing
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      # This ugly bit is necessary to prevent the cache from growing forever
+      # See https://github.com/docker/build-push-action/issues/252
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+  # פרסום חבילה ל-PyPI (רק בשחרורים)
+  publish-python-package:
+    name: Publish Python Package
+    runs-on: ubuntu-latest
+    needs: [build-python-package]
+    if: needs.build-python-package.outputs.is_release == 'true'
+    environment: production
+    
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: python-package
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          repository-url: https://upload.pypi.org/legacy/
+          skip-existing: true
+
+  # פרסום Docker image
+  publish-docker-image:
+    name: Publish Docker Image
+    runs-on: ubuntu-latest
+    needs: [build-python-package, build-docker-image]
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop')
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Set up Docker layer caching
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ env.CACHE_KEY_PREFIX }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ env.CACHE_KEY_PREFIX }}-buildx-
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Generate Docker tags
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=${{ needs.build-python-package.outputs.version }},enable=true
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      # This ugly bit is necessary to prevent the cache from growing forever
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+  # פריסה (רק בדוגמה - יש להחליף בפרטי הפריסה האמיתיים)
+  deploy:
+    name: Deploy to Environment
+    runs-on: ubuntu-latest
+    needs: [publish-python-package, publish-docker-image]
+    if: |
+      success() && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+        (github.event_name == 'workflow_dispatch')
+      )
+    
+    # הגדר סביבות לפריסה
+    environment:
+      name: ${{ github.event.inputs.environment || (startsWith(github.ref, 'refs/tags/v') && 'prod' || 'dev') }}
       
-    - name: Login to Docker Hub
-      uses: docker/login-action@v2
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
-        
-    - name: Extract metadata for Docker
-      id: meta
-      uses: docker/metadata-action@v4
-      with:
-        images: ${{ secrets.DOCKER_USERNAME }}/flink-cdc-gateway
-        tags: |
-          type=ref,event=branch
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=sha,format=short
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set deploy variables
+        id: deploy_vars
+        run: |
+          if [[ "${{ github.event.inputs.environment }}" == "prod" || "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
+            echo "DEPLOY_ENV=prod" >> $GITHUB_OUTPUT
+            echo "DEPLOY_NAMESPACE=flink-cdc-prod" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.inputs.environment }}" == "staging" ]]; then
+            echo "DEPLOY_ENV=staging" >> $GITHUB_OUTPUT
+            echo "DEPLOY_NAMESPACE=flink-cdc-staging" >> $GITHUB_OUTPUT
+          else
+            echo "DEPLOY_ENV=dev" >> $GITHUB_OUTPUT
+            echo "DEPLOY_NAMESPACE=flink-cdc-dev" >> $GITHUB_OUTPUT
+          fi
+
+      # שלבי פריסה - אלו הן דוגמאות בלבד
+      - name: Deploy to OpenShift
+        run: |
+          echo "Deploying to ${{ steps.deploy_vars.outputs.DEPLOY_ENV }} environment in namespace ${{ steps.deploy_vars.outputs.DEPLOY_NAMESPACE }}"
+          echo "In production, this would run actual deployment commands"
+          # לדוגמה: oc login, helm upgrade, etc.
+
+      - name: Verify deployment
+        run: |
+          echo "Verifying deployment in ${{ steps.deploy_vars.outputs.DEPLOY_ENV }}"
+          echo "In production, this would run verification commands"
+          # לדוגמה: בדיקת שירותים, בדיקת בריאות, וכו'
+
+  # יצירת GitHub Release (רק בתגים)
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-python-package, publish-python-package, publish-docker-image]
+    if: needs.build-python-package.outputs.is_release == 'true'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_GITHUB }}
+
+      - name: Download package artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: python-package
+          path: dist/
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git tag --sort=-creatordate | grep "^v" | head -n 2 | tail -n 1 || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            CHANGES=$(git log --pretty=format:"- %s [%h]" -10)
+          else
+            CHANGES=$(git log --pretty=format:"- %s [%h]" ${PREV_TAG}..HEAD)
+          fi
+          echo "CHANGES<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*
+          name: Release ${{ needs.build-python-package.outputs.version }}
+          tag_name: v${{ needs.build-python-package.outputs.version }}
+          body: |
+            ## Flink CDC Gateway ${{ needs.build-python-package.outputs.version }}
+            
+            ### Changes
+            
+            ${{ steps.changelog.outputs.CHANGES }}
+            
+            ### Installation
+            
+            #### PyPI
+            ```
+            pip install flink-cdc-gateway
+            ```
+            
+            #### Docker
+            ```
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-python-package.outputs.version }}
+            ```
+            
+            #### Helm Chart (OpenShift)
+            ```
+            helm install flink-cdc ./flink-cdc-connector -n flink-cdc --create-namespace
+            ```
+          token: ${{ secrets.PAT_GITHUB }}
+          draft: false
+          prerelease: false
+
+  # סיכום והודעה על השלמת התהליך
+  notify:
+    name: Notify Completion
+    runs-on: ubuntu-latest
+    needs: [deploy, create-release]
+    if: always()
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Check workflow status
+        id: status
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "STATUS=failure" >> $GITHUB_OUTPUT
+            echo "COLOR=FF0000" >> $GITHUB_OUTPUT
+            echo "EMOJI=❌" >> $GITHUB_OUTPUT
+          else
+            echo "STATUS=success" >> $GITHUB_OUTPUT
+            echo "COLOR=00FF00" >> $GITHUB_OUTPUT
+            echo "EMOJI=✅" >> $GITHUB_OUTPUT
+          fi
           
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
+          if [[ "${{ needs.build-python-package.outputs.is_release }}" == "true" ]]; then
+            echo "IS_RELEASE=true" >> $GITHUB_OUTPUT
+            echo "VERSION=${{ needs.build-python-package.outputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
+            echo "VERSION=latest development version" >> $GITHUB_OUTPUT
+          fi
+      
+      # הפעל אזעקה/הודעה, לדוגמה:
+      - name: Simulate notification
+        run: |
+          echo "${{ steps.status.outputs.EMOJI }} CI/CD process for Flink CDC Gateway completed with status: ${{ steps.status.outputs.STATUS }}"
+          if [[ "${{ steps.status.outputs.IS_RELEASE }}" == "true" ]]; then
+            echo "🎉 Release v${{ steps.status.outputs.VERSION }} is now available!"
+          else
+            echo "👷 Build completed for ${{ steps.status.outputs.VERSION }}"
+          fi
+          
+          # בסביבת ייצור, תוכל להשתמש באחד מאלה:
+          # - actions/slack-notify
+          # - גישה ל-API של Teams/Slack/Discord וכו'
