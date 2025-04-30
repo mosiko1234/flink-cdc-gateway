@@ -9,7 +9,14 @@ on:
   pull_request:
     branches: [ main, master ]
 
+# הגדרות סביבה גלובליות
+env:
+  PYTHON_VERSION: '3.9'
+  REGISTRY: ${{ secrets.DOCKER_USERNAME }}
+  IMAGE_NAME: flink-cdc-gateway
+
 jobs:
+  # בדיקות ואימות הקוד
   test:
     name: Test Python Package
     runs-on: ubuntu-latest
@@ -20,7 +27,8 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: pip
         
     - name: Install dependencies
       run: |
@@ -40,70 +48,114 @@ jobs:
           
     - name: Verify packages
       run: |
-        # בדוק את הגרסאות המותקנות (להוסיף יותר מידע)
+        # בדוק את הגרסאות המותקנות
         echo "Checking installed packages:"
         python -m pip list | grep -E 'Flask|Werkzeug' || echo "Failed to find packages"
           
-        # בדוק גם באמצעות pip show שלא מסתמך על grep
+        # בדוק גם באמצעות pip show
         echo "Detailed package info:"
         python -m pip show flask werkzeug || echo "Failed to show package details"
         
     - name: Lint with flake8
       run: |
-        # stop the build if there are Python syntax errors or undefined names
+        # עצור את הבנייה אם יש שגיאות תחביר Python או שמות לא מוגדרים
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings
+        # exit-zero מתייחס לכל השגיאות כאזהרות
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
         
     - name: Test with pytest
       run: |
+        # הרץ את הבדיקות עם בדיקת כיסוי
         pytest --cov=cdc_gateway
 
-  build-and-publish-python:
-    name: Build and Publish Python Package
+  # בניית חבילת Python
+  build-python:
+    name: Build Python Package
     needs: test
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # בנה תמיד אחרי בדיקות מוצלחות
     
+    outputs:
+      version: ${{ steps.set_version.outputs.VERSION }}
+      is_release: ${{ steps.set_version.outputs.IS_RELEASE }}
+      
     steps:
     - uses: actions/checkout@v3
     
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
+        python-version: ${{ env.PYTHON_VERSION }}
         
-    - name: Install dependencies
+    - name: Set version
+      id: set_version
+      run: |
+        # אם יש תג, השתמש בו כגרסה
+        if [[ $GITHUB_REF == refs/tags/v* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "IS_RELEASE=true" >> $GITHUB_OUTPUT
+        else
+          # אחרת השתמש בגרסה + תאריך + קיצור SHA
+          VERSION=$(python -c "import cdc_gateway; print(cdc_gateway.__version__)")-dev.$(date +%Y%m%d%H%M).${GITHUB_SHA::7}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
+        fi
+        echo "Setting version to: $VERSION"
+        
+    - name: Update version in code
+      run: |
+        # עדכן את הגרסה בקוד
+        sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.set_version.outputs.VERSION }}\"/" cdc_gateway/__init__.py
+        
+    - name: Install build dependencies
       run: |
         python -m pip install --upgrade pip
         pip install build twine
         
-    - name: Extract version from tag
-      id: get_version
-      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-        
     - name: Build package
       run: |
-        # Update version in init file based on tag
-        sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_version.outputs.VERSION }}\"/" cdc_gateway/__init__.py
         python -m build
+        ls -la dist/
         
     - name: Check package
       run: |
         python -m twine check dist/*
+
+    # שמור את החבילה כartefact
+    - name: Store Python package
+      uses: actions/upload-artifact@v2
+      with:
+        name: python-package
+        path: dist/
+        retention-days: 5
+
+  # פרסום חבילת Python ל-PyPI (רק בשחרורים)
+  publish-python:
+    name: Publish Python Package to PyPI
+    needs: build-python
+    runs-on: ubuntu-latest
+    if: needs.build-python.outputs.is_release == 'true'
+    
+    steps:
+    - name: Download Python package
+      uses: actions/download-artifact@v2
+      with:
+        name: python-package
+        path: dist/
         
     - name: Publish to PyPI
-      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
         password: ${{ secrets.PYPI_API_TOKEN }}
         repository-url: https://upload.pypi.org/legacy/
 
-  build-and-publish-docker:
+  # בניית ופרסום אימג' Docker
+  publish-docker:
     name: Build and Publish Docker Image
-    needs: [test, build-and-publish-python]
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'push'
+    needs: [test, build-python]
     runs-on: ubuntu-latest
+    if: github.event_name == 'push'  # פרסם דוקר בפוש לענפים ראשיים ותגים
     
     steps:
     - uses: actions/checkout@v3
@@ -112,12 +164,13 @@ jobs:
       id: meta
       uses: docker/metadata-action@v4
       with:
-        images: ${{ secrets.DOCKER_USERNAME }}/flink-cdc-gateway  # שימוש ישיר ב-Docker Hub
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           type=ref,event=branch
           type=sha,format=short
+          type=raw,value=${{ needs.build-python.outputs.version }},enable=true
           
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
@@ -139,17 +192,24 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
+  # יצירת שחרור GitHub (רק בתגים)
   create-release:
     name: Create GitHub Release
-    needs: [build-and-publish-python, build-and-publish-docker]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-python, publish-python, publish-docker]
     runs-on: ubuntu-latest
+    if: needs.build-python.outputs.is_release == 'true'
     
     steps:
     - uses: actions/checkout@v3
       with:
         fetch-depth: 0
-        token: ${{ secrets.PAT_GITHUB }}  # השתמש ב-PAT במקום GITHUB_TOKEN
+        token: ${{ secrets.PAT_GITHUB }}
+        
+    - name: Download Python package
+      uses: actions/download-artifact@v2
+      with:
+        name: python-package
+        path: dist/
         
     - name: Generate changelog
       id: changelog
@@ -171,20 +231,24 @@ jobs:
     - name: Create Release
       uses: ncipollo/release-action@v1
       with:
+        name: "Release v${{ needs.build-python.outputs.version }}"
         body: |
-          ## Changes
+          ## Flink CDC Gateway v${{ needs.build-python.outputs.version }}
+          
+          ### Changes
           
           ${{ steps.changelog.outputs.CHANGES }}
           
-          ## Installation
+          ### Installation
           
-          ### PyPI
+          #### PyPI
           ```
           pip install flink-cdc-gateway
           ```
           
-          ### Docker
+          #### Docker
           ```
-          docker pull ${{ secrets.DOCKER_USERNAME }}/flink-cdc-gateway:${{ github.ref_name }}
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-python.outputs.version }}
           ```
         token: ${{ secrets.PAT_GITHUB }}
+        artifacts: "dist/*"
