@@ -80,10 +80,11 @@ jobs:
         export CONFIG_PATH=$PWD/tests/test-config.yaml
         pytest --cov=cdc_gateway
 
-  build-python:
-    name: Build Python Package
+  build-and-publish:
+    name: Build and Publish
     needs: test
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     
     steps:
     - uses: actions/checkout@v3
@@ -93,22 +94,20 @@ jobs:
       with:
         python-version: '3.9'
         
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install build twine
-    
     - name: Set version
       id: set_version
       run: |
         # אם יש תג, השתמש בו כגרסה
         if [[ $GITHUB_REF == refs/tags/v* ]]; then
           VERSION=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "IS_RELEASE=true" >> $GITHUB_OUTPUT
         else
           # אחרת השתמש בגרסה + תאריך + קיצור SHA
           VERSION=$(python -c "import cdc_gateway; print(cdc_gateway.__version__)")-dev.$(date +%Y%m%d%H%M).${GITHUB_SHA::7}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
         fi
-        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
         echo "Setting version to: $VERSION"
         
     - name: Update version in code
@@ -116,98 +115,33 @@ jobs:
         # עדכן את הגרסה בקוד
         sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.set_version.outputs.VERSION }}\"/" cdc_gateway/__init__.py
         
-    - name: Build package
-      run: python -m build
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine
+        
+    - name: Build Python package
+      run: |
+        python -m build
+        echo "Package built successfully"
+        ls -la dist/
         
     - name: Check package
-      run: python -m twine check dist/*
-    
-    - name: Upload package artifact
-      uses: actions/upload-artifact@v2  # Downgrade to v2 for compatibility
-      with:
-        name: python-package
-        path: dist/
-        retention-days: 7
-
-  publish-python:
-    name: Publish Python Package to PyPI
-    needs: build-python
-    runs-on: ubuntu-latest
-    # רץ רק אם יש תג ואם הריצה היא מפוש (לא PR)
-    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
-    
-    steps:
-    - name: Download package artifact
-      uses: actions/download-artifact@v2  # Downgrade to v2 for compatibility
-      with:
-        name: python-package
-        path: dist/
+      run: |
+        python -m twine check dist/*
         
     - name: Publish to PyPI
+      if: steps.set_version.outputs.IS_RELEASE == 'true'
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
         password: ${{ secrets.PYPI_API_TOKEN }}
         repository-url: https://upload.pypi.org/legacy/
-
-  build-docker:
-    name: Build Docker Image
-    needs: test
-    runs-on: ubuntu-latest
     
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Extract metadata for Docker
-      id: meta
-      uses: docker/metadata-action@v4
-      with:
-        images: ${{ secrets.DOCKER_USERNAME }}/flink-cdc-gateway
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=sha,format=short
-          
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
       
-    - name: Build Docker image
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        push: false
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        outputs: type=docker,dest=/tmp/flink-cdc-image.tar
-
-    - name: Upload Docker image artifact
-      uses: actions/upload-artifact@v2  # Downgrade to v2 for compatibility
-      with:
-        name: docker-image
-        path: /tmp/flink-cdc-image.tar
-        retention-days: 1
-
-  publish-docker:
-    name: Publish Docker Image
-    needs: build-docker
-    runs-on: ubuntu-latest
-    # רץ רק בענפים ראשיים או תגים, ולא ב-PR
-    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    
-    steps:
-    - name: Download Docker image artifact
-      uses: actions/download-artifact@v2  # Downgrade to v2 for compatibility
-      with:
-        name: docker-image
-        path: /tmp
-        
-    - name: Load Docker image
-      run: docker load --input /tmp/flink-cdc-image.tar
-        
     - name: Login to Docker Hub
+      if: github.event_name != 'pull_request'
       uses: docker/login-action@v2
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
@@ -224,75 +158,37 @@ jobs:
           type=semver,pattern={{major}}.{{minor}}
           type=sha,format=short
 
-    - name: Push Docker image
-      run: |
-        # דחוף את כל התגים שהוגדרו
-        for tag in $(echo '${{ steps.meta.outputs.tags }}' | tr '\n' ' '); do
-          echo "Pushing tag: $tag"
-          docker push $tag
-        done
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
 
-  create-release:
-    name: Create GitHub Release
-    needs: [publish-python, publish-docker]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    
-    steps:
-    - uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
-        
-    - name: Download package artifact
-      uses: actions/download-artifact@v2  # Downgrade to v2 for compatibility
-      with:
-        name: python-package
-        path: dist/
-    
-    - name: Get tag name
-      id: tag
-      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-        
-    - name: Get commit messages
-      id: commits
+    - name: Create GitHub Release
+      if: steps.set_version.outputs.IS_RELEASE == 'true'
       run: |
-        # קבל את כל ההודעות קומיט מהתג האחרון עד לתג הנוכחי
+        # Install GitHub CLI
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+        sudo apt update
+        sudo apt install gh
+        
+        # Get commit messages
         PREV_TAG=$(git tag --sort=-creatordate | grep "^v" | head -n 2 | tail -n 1 || echo "")
         if [ -z "$PREV_TAG" ]; then
-          # אם אין תג קודם, קח את כל ההודעות קומיט
+          # If no previous tag, get the last 10 commits
           CHANGES=$(git log --pretty=format:"- %s" -10)
         else
-          # אחרת קח את ההודעות מהתג האחרון
+          # Otherwise get commits since the last tag
           CHANGES=$(git log --pretty=format:"- %s" ${PREV_TAG}..HEAD)
         fi
-        # שמור את ההודעות בפורמט מתאים לגיטהאב
-        echo "CHANGES<<EOF" >> $GITHUB_OUTPUT
-        echo "$CHANGES" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
         
-    - name: Create Release
-      uses: ncipollo/release-action@v1
-      with:
-        name: "Release ${{ steps.tag.outputs.VERSION }}"
-        body: |
-          ## Flink CDC Gateway ${{ steps.tag.outputs.VERSION }}
-          
-          ### Changes
-          
-          ${{ steps.commits.outputs.CHANGES }}
-          
-          ### Installation
-          
-          #### PyPI
-          ```
-          pip install flink-cdc-gateway
-          ```
-          
-          #### Docker
-          ```
-          docker pull ${{ secrets.DOCKER_USERNAME }}/flink-cdc-gateway:${{ steps.tag.outputs.VERSION }}
-          ```
-        artifacts: "dist/*"
-        token: ${{ secrets.GITHUB_TOKEN }}
-        draft: false
-        allowUpdates: true
+        # Create release notes
+        RELEASE_NOTES="## Flink CDC Gateway ${{ steps.set_version.outputs.VERSION }}\n\n### Changes\n\n${CHANGES}\n\n### Installation\n\n#### PyPI\n\`\`\`\npip install flink-cdc-gateway\n\`\`\`\n\n#### Docker\n\`\`\`\ndocker pull ${{ secrets.DOCKER_USERNAME }}/flink-cdc-gateway:${{ steps.set_version.outputs.VERSION }}\n\`\`\`"
+        
+        # Create release using GitHub CLI
+        echo "$RELEASE_NOTES" > release_notes.md
+        gh auth login --with-token <<< "${{ secrets.GITHUB_TOKEN }}"
+        gh release create v${{ steps.set_version.outputs.VERSION }} --title "Release ${{ steps.set_version.outputs.VERSION }}" --notes-file release_notes.md ./dist/*
